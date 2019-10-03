@@ -2,6 +2,7 @@
  *  Ohm Hour
  *
  *  Copyright 2015 Mark West
+ *  Copyright 2019 Donald Kirker, SmartThings
  *  Version 1.0 8/8/15
  *
  *  Licensed under the Apache License, Version 2.0 (the "License"); you may not use this file except
@@ -15,52 +16,54 @@
  *
  */
 definition(
-    name: "Ohmconnect",
-    namespace: "afewremarks",
-    author: "Mark West",
-    description: "Integration into ohm connect to turn off plugs/switches and dim lights during peak energy events",
-    category: "",
-    iconUrl: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience.png",
-    iconX2Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png",
-    iconX3Url: "https://s3.amazonaws.com/smartapp-icons/Convenience/Cat-Convenience@2x.png")
+	name: "Ohm Connect",
+	namespace: "afewremarks",
+	author: "Mark West, Donald Kirker",
+	description: "Integration into ohm connect to turn off plugs/switches and dim lights during peak energy events",
+	category: "",
+	iconUrl: "https://is2-ssl.mzstatic.com/image/thumb/Purple1/v4/e0/48/5a/e0485add-efbd-fa16-4130-712b87d95c44/source/512x512bb.jpg",
+	iconX2Url: "https://is2-ssl.mzstatic.com/image/thumb/Purple1/v4/e0/48/5a/e0485add-efbd-fa16-4130-712b87d95c44/source/512x512bb.jpg",
+	iconX3Url: "https://is2-ssl.mzstatic.com/image/thumb/Purple1/v4/e0/48/5a/e0485add-efbd-fa16-4130-712b87d95c44/source/512x512bb.jpg"
+)
 
 
 preferences {
-
 	page(name: "getPref")
-    
 }
 
-def getPref() {    
-    dynamicPage(name: "getPref", title: "Enter your OhmConnect ID", install:true, uninstall: true) {
-	section("Configure your Ohmconnect 8 digit ID (end of the URL at the bottom of the account page)") {
-        input "ohmID", "text", title: "Ohm Connect ID", required: true
-    }
-   
-    def phrases = location.helloHome?.getPhrases()*.label
+def getPref() {
+	dynamicPage(name: "getPref", title: "Enter your OhmConnect ID", install:true, uninstall: true) {
+		section("Configure your Ohmconnect 8 digit ID (end of the URL at the bottom of the account page)") {
+			input "ohmID", "text", title: "Ohm Connect ID", required: true
+		}
+		section("Configure how many minutes past the end of the official hour you want to run") {
+			input "ohmHourExtension", "number", title: "Extension duration (minutes)", range: "0..60", defaultValue: 0
+		}
+
+		def phrases = location.helloHome?.getPhrases()*.label
 		if (phrases) {
-        	phrases.sort()
+			phrases.sort()
 			section("Perform which phrase when...") {
 				log.trace phrases
 				input "phrase_start", "enum", title: "Ohm Hour starts", required: true, options: phrases
 				input "phrase_end", "enum", title: "Ohm Hour stops", required: true, options: phrases
 			}
 		}
-		section([mobileOnly:true], "Options") {
+		section([mobileOnly: true], "Options") {
 			label(title: "Assign a name", required: false)
-            mode title: "Set for specific mode(s)", required: false
-            href "pageAbout", title: "About ${textAppName()}", description: "Tap to get application version,  license and instructions"
+			mode title: "Set for specific mode(s)", required: false
+			href "pageAbout", title: "About ${textAppName()}", description: "Tap to get application version,  license and instructions"
 		}
-    }
+	}
 }
 
 page(name: "pageAbout", title: "About ${textAppName()}") {
-        section {
-            paragraph "${textVersion()}\n${textCopyright()}\n\n${textLicense()}\n"
-        }
-        section("Instructions") {
-            paragraph textHelp()
-        }
+	section {
+		paragraph "${textVersion()}\n${textCopyright()}\n\n${textLicense()}\n"
+	}
+	section("Instructions") {
+		paragraph textHelp()
+	}
 }
 
 def installed() {
@@ -76,42 +79,61 @@ def updated() {
 }
 
 def initialize() {
-	// TODO: subscribe to attributes, devices, locations, etc.
-    runEvery5Minutes(updateOhmHourStatus)
+	updateOhmHourStatus()
+	runEvery5Minutes(updateOhmHourStatus)
 }
 
 def updateOhmHourStatus() {
 	def params = [
-        uri:  'https://login.ohmconnect.com/verify-ohm-hour/',
-        path: ohmID,
-    ]
-    try {
-    httpGet(params) { resp ->
-    //    resp.headers.each {
-    //       log.debug "${it.name} : ${it.value}"
-    //    }
-       
-       if(resp.data.active == "True"){
-       log.debug "Ohm Hour"
-       
-       location.helloHome.execute(settings.phrase_start)
-       
-       def delay = (60 * 5)+30
-		runIn(delay,endOhmHour )
-       }else{
-       	log.debug "Not currently an Ohm Hour"
-       }
-    }
-} catch (e) {
-    log.error "something went wrong: $e"
-}
+		uri:  'https://login.ohmconnect.com/verify-ohm-hour/',
+		path: ohmID,
+	]
 
+	if (!state.ohmHourStart) {
+		try {
+			httpGet(params) { resp ->
+				/*resp.headers.each {
+					log.debug "${it.name} : ${it.value}"
+				}*/
+
+				//log.debug "Response Address: ${resp?.data?.address}; is active: ${resp?.data?.active}"
+
+				if (resp?.data?.active == "True") {
+					log.debug "Starting Ohm Hour!"
+
+					location.helloHome.execute(settings.phrase_start)
+
+					state.ohmHourStart = now()
+
+					def delay = ohmHourDuration
+					runIn(delay, endOhmHour, [overwrite: true])
+				} else {
+					log.debug "Not currently an Ohm Hour"
+				}
+			}
+		} catch (e) {
+			log.error "Ooops! Something went wrong: $e"
+		}
+	} else {
+		log.debug "Ohm Hour is active since ${new Date(state.ohmHourStart).toString()}!"
+
+		int delay = ((state.ohmHourStart / 1000) + ohmHourDuration) - (now() / 1000)
+		log.debug "Update end callback for execution in $delay seconds (Ohm Hour will end at ${new Date(state.ohmHourStart + (ohmHourDuration * 1000)).toString()})"
+
+		runIn(delay, endOhmHour, [overwrite: true])
+	}
 }
 
 def endOhmHour() {
+	log.debug "Finishing Ohm Hour"
 
 	location.helloHome.execute(settings.phrase_end)
 
+	state.ohmHourStart = null
+}
+
+private getOhmHourDuration() {
+	1 * 60 * 60 + (ohmHourExtension != null ? ohmHourExtension as int : 0) * 60 // 1 hour 15 minutes
 }
 
 //Version/Copyright/Information/Help
@@ -121,32 +143,31 @@ private def textAppName() {
 }	
 
 private def textVersion() {
-    def text = "Version 1.0 (8/8/15)"
+	def text = "Version 1.0 (8/8/15)"
 }
 
 private def textCopyright() {
-    def text = "Copyright © 2015 Mark West"
+	def text = "Copyright © 2015 Mark West"
 }
 
 private def textLicense() {
-    def text =
-		"Licensed under the Apache License, Version 2.0 (the 'License'); "+
-		"you may not use this file except in compliance with the License. "+
-		"You may obtain a copy of the License at"+
-		"\n\n"+
-		"    http://www.apache.org/licenses/LICENSE-2.0"+
-		"\n\n"+
-		"Unless required by applicable law or agreed to in writing, software "+
-		"distributed under the License is distributed on an 'AS IS' BASIS, "+
-		"WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. "+
-		"See the License for the specific language governing permissions and "+
+	def text =
+		"Licensed under the Apache License, Version 2.0 (the 'License'); " +
+		"you may not use this file except in compliance with the License. " +
+		"You may obtain a copy of the License at" +
+		"\n\n" +
+		"    http://www.apache.org/licenses/LICENSE-2.0" +
+		"\n\n" +
+		"Unless required by applicable law or agreed to in writing, software " +
+		"distributed under the License is distributed on an 'AS IS' BASIS, " +
+		"WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied. " +
+		"See the License for the specific language governing permissions and " +
 		"limitations under the License."
 }
 
 private def textHelp() {
 	def text =
-    	"Ohm Connect is a service that notifies you during peak power grid demand so you can reduce your consumption.(referal link: ohmc.co/ccedf6)"+
-		"This app pings the Ohm Connect server every 5 mins to see if there is an Ohm Hour Event. "+
+		"Ohm Connect is a service that notifies you during peak power grid demand so you can reduce your consumption. (Referal link: ohmc.co/ccedf6)" +
+		"This app pings the Ohm Connect server every 5 mins to see if there is an Ohm Hour Event. " +
 		"When there is it will run a Hello, Home phrase to help reduce your power use. After the Ohm Hour ends it will run an additional Hello, home phrase." 
 }
-
